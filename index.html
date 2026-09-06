@@ -122,10 +122,29 @@ function onStatus(event) {
     '<br>Current: ' + cur;
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// The first connect after the board has been idle often drops before the
+// services can be read. Three tries, fresh connection each time.
+async function openService(device) {
+  let last = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const server = await device.gatt.connect();
+      return await server.getPrimaryService(SERVICE);
+    } catch (e) {
+      last = e;
+      statusEl.textContent = 'Connecting… (try ' + (attempt + 1) + ')';
+      try { device.gatt.disconnect(); } catch (_) {}
+      await sleep(700);
+    }
+  }
+  throw last;
+}
+
 async function connectTo(device) {
   statusEl.textContent = 'Connecting…';
-  const server  = await device.gatt.connect();
-  const service = await server.getPrimaryService(SERVICE);
+  const service = await openService(device);
   ctrlChar = await service.getCharacteristic(CTRL);
 
   // Unlock before anything else; the board ignores commands until this matches.
@@ -155,11 +174,18 @@ document.getElementById('connect').onclick = async () => {
     return;
   }
   try {
-    // Reconnect silently if this device was already allowed once.
+    // Reconnect silently if this device was already allowed once. A remembered
+    // device that stays silent falls through to the picker below.
     if (navigator.bluetooth.getDevices) {
-      const known = await navigator.bluetooth.getDevices();
-      const found = known.find(d => d.name === 'AventonBike');
-      if (found) { await connectTo(found); return; }
+      let found = null;
+      try {
+        const known = await navigator.bluetooth.getDevices();
+        found = known.find(d => d.name === 'AventonBike');
+      } catch (_) {}
+      if (found) {
+        try { await connectTo(found); return; }
+        catch (_) { statusEl.textContent = 'Saved bike did not answer. Scanning…'; }
+      }
     }
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ name: 'AventonBike' }],
