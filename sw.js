@@ -1,5 +1,5 @@
 // Caches the app so it opens with no internet at all.
-const CACHE = 'bike-v1';
+const CACHE = 'bike-v2';
 const FILES = ['./', './index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
