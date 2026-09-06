@@ -1,26 +1,24 @@
-# Aventon Aventure.2 — running the stock controller with no display
+# Aventon Aventure — running the controller without a display
 
-The BC280 display on an Aventon Aventure.2 is not just a screen. Without it the
-controller sits there doing nothing: the throttle is dead, pedalling does
-nothing, and the motor never turns, even though the motor, throttle and battery
-are all perfectly fine.
+The Aventon Aventure ships with a BC280 display. Remove it and the bike is
+dead: the throttle does nothing, pedalling does nothing, and the motor never
+turns, even with a healthy motor, throttle and battery.
 
-This documents the protocol that display speaks, so you can replace it with an
-Arduino and a phone.
+The display isn't just a screen — the controller waits for it to talk before it
+will do anything. This documents that conversation, so an Arduino can replace
+it.
 
-**Result:** throttle works, pedal assist works with levels 0–5, lights work,
-walk assist works. Controlled from a phone over Bluetooth.
+Working: throttle, pedal assist levels 0–5, lights, walk assist, live speed
+readout, controlled from a phone over Bluetooth.
 
----
+## Protocol
 
-## The protocol
-
-**KingMeter 618U style, 9600 baud, 8N1**, on the two serial wires in the
-display branch.
+KingMeter 618U style, **9600 baud, 8N1**, on the two serial wires of the display
+branch.
 
 ### Display → controller
 
-Exactly **6 bytes**:
+Exactly 6 bytes:
 
 ```
 46  <flags>  20  00  00  0D
@@ -28,172 +26,105 @@ Exactly **6 bytes**:
 
 | flags bit | meaning |
 |---|---|
-| 0–3 | assist level 0–5 (**pedal assist only**) |
-| 4 | walk assist — fixed slow speed, runs with no throttle |
-| 7 | lights — front and rear together |
+| 0–3 | assist level 0–5 (pedal assist only) |
+| 4 | walk assist — fixed slow speed, runs without throttle |
+| 7 | lights — front and rear share one output |
 
-Bits 5 and 6 do nothing that we could find.
+Bits 5 and 6 have no observed effect.
 
-The message length is **exactly 6 bytes**. Send 7 or more and the controller
-does not reply at all — we tested lengths 6 through 12, and only 6 gets a
-response.
+Length must be exactly 6. Lengths 7 through 12 receive no reply.
 
 ### Controller → display
 
-**8 bytes**, sent in reply to every message:
+8 bytes, returned to every message:
 
 ```
 46  03  <current>  <speed hi>  <speed lo>  00  <x>  <x>
 ```
 
-`speed` is a **wheel period, so lower means faster**. `3341` (`0x0D0D`) means
-stopped. Around `818` is walk-assist speed. Around `210–350` is real riding
-speed.
+`speed` is a wheel period, so **lower is faster**. `0x0D0D` (3341) means
+stopped; roughly 818 is walk-assist speed and 210–350 is riding speed.
 
-`current` reads 0–2 while cruising and jumps to ~5 under hard acceleration,
-which is why we think it's motor current.
-
----
+`current` sits at 0–2 while cruising and rises to about 5 under acceleration.
 
 ## Wiring
 
-8-pin Julet connector at the controller. Pinout confirmed by continuity and
-measurement:
+8-pin Julet connector at the controller:
 
 | Pin | Function |
 |---|---|
 | 1 | GND |
-| 3 | 5 V rail |
-| 4 | VCC (battery, 48 V) |
+| 3 | 5 V |
+| 4 | VCC (48 V) |
 | 5 | K — ignition |
 | 6 | serial |
 | 7 | serial |
 
-The display branch has 5 wires: VCC, GND, and three signal wires. VCC→pin 4,
-GND→pin 1, wire 1→pin 6, wire 2→pin 7, wire 3→pin 5.
+The display branch carries VCC, GND and three signal wires: wire 1 → pin 6,
+wire 2 → pin 7, wire 3 → pin 5.
 
-Arduino connections:
+Arduino:
 
 ```
 D0 (RX)  ->  display wire 1
 D1 (TX)  ->  display wire 2
-GND      ->  display GND      <-- REQUIRED, see below
+GND      ->  display GND
 ```
 
-### The K wire
+**K must be connected directly to VCC.** The display switches battery positive
+onto it. Feeding K through a resistor does not boot the controller — 10 kΩ gives
+2.18 V and 6 kΩ gives 2.33 V, neither is enough.
 
-The controller will not boot unless K is pulled to battery voltage. Feeding it
-through a resistor does **not** work — 10 kΩ from VCC gave 2.18 V and no boot,
-6 kΩ gave 2.33 V and no boot. It needs a proper connection to VCC. That's what
-the display does: it switches battery positive onto K.
+## Notes
 
----
+**Ground is mandatory.** Without the Arduino ground tied to the bike ground the
+serial levels are undefined, the controller never replies, and the two signal
+wires show a phantom echo that looks like real traffic. It is ground-loop noise
+and disappears once ground is connected.
 
-## Things that cost us days — read this part
+**Assist level only affects pedalling.** With nobody turning the pedals,
+changing the level produces no motor response, so the byte looks dead. Test it
+while pedalling.
 
-### 1. Ground. Connect the ground.
+**The throttle ignores assist level.** It delivers full power at any level,
+including 0, as long as messages are being sent. The unlock is simply holding
+the link up.
 
-We spent an enormous amount of time sending every known e-bike protocol at every
-baud rate and getting nothing back, concluding one protocol after another was
-"ruled out". **The Arduino's ground was never connected to the bike's ground.**
+**The brake light indicates a malformed message.** It comes on while the
+controller receives frames it can't parse and goes off when valid ones resume.
 
-Every one of those negative results was meaningless. With no shared ground
-reference the serial levels are undefined, and we were also chasing a phantom
-"echo" between the two wires that turned out to be pure ground-loop noise — it
-vanished the instant a real ground was connected.
+## Contents
 
-If you take one thing from this document: connect GND first.
-
-### 2. Assist level does nothing unless you are pedalling
-
-We swept every byte of the message looking for the assist level and concluded
-"nothing affects speed". That conclusion was wrong, and we reached it **twice**.
-
-Assist level only affects the **pedal assist** path. If nobody is turning the
-pedals, changing the assist level produces no motor response at all, so it looks
-dead. The only thing that moves the wheel with no pedalling is walk assist.
-
-To test assist levels you have to actually pedal.
-
-### 3. The throttle is not gated by assist level
-
-The throttle gives full power at **any** assist level, including 0, as long as
-something is holding up the serial link. Aventon's "the throttle does nothing at
-PAS 0" really means "the throttle does nothing when no display is talking to the
-controller."
-
-So the unlock is simply: **send valid messages continuously and the throttle
-works.**
-
-### 4. The brake light is a fault indicator
-
-While we were sending malformed messages, the brake light came on, and it went
-off again as soon as valid messages resumed. It's a useful free diagnostic for
-"the controller doesn't understand you".
-
----
-
-## What's in here
-
-| file | what it is |
+| file | purpose |
 |---|---|
-| `bike_ble/bike_ble.ino` | Arduino sketch — BLE control, passcode protected |
-| `index.html` | phone web app, talks to the board over Web Bluetooth |
+| `bike_ble/bike_ble.ino` | Arduino sketch — Bluetooth control, passcode protected |
+| `index.html` | phone app, connects over Web Bluetooth |
 | `manifest.json`, `sw.js`, `icon.svg` | make the page installable and work offline |
 
-Built and tested on an **Arduino UNO R4 WiFi**. Any board with BLE and a spare
-hardware serial port should work.
-
----
+Built on an Arduino UNO R4 WiFi. Any board with BLE and a spare hardware serial
+port should work.
 
 ## Setup
 
-1. Open `bike_ble/bike_ble.ino`, change `PASSCODE` to something of your own,
-   and flash it to the board.
-2. Wire D0, D1 and **GND** as above.
-3. Host this folder on GitHub Pages (Web Bluetooth requires HTTPS, so the page
-   can't be served from the Arduino itself).
-4. Open the page on an Android phone in Chrome, type your passcode, tap
-   Connect.
-5. Chrome menu → Add to Home screen. It then works offline as an app.
+1. Set `PASSCODE` in `bike_ble/bike_ble.ino` and flash the board.
+2. Wire D0, D1 and GND as above.
+3. Host this folder on GitHub Pages. Web Bluetooth requires HTTPS, so the page
+   cannot be served from the Arduino.
+4. Open it in Chrome on Android, enter the passcode, tap Connect.
+5. Chrome menu → Add to Home screen. It then runs offline as an app.
 
-The passcode is stored on your phone only — it is never part of this source, so
-publishing your copy doesn't let anyone else control your bike.
+The passcode is stored on the phone, never in the source, so a published copy
+gives no one else control of the bike.
 
-**Web Bluetooth does not work in Safari on iPhone.** Android only.
+Web Bluetooth is unavailable in Safari, so iOS is not supported.
 
----
+## Unidentified
 
-## Powering the Arduino
-
-Don't take power from the brake wire. It measures about 4.75 V but delivers
-essentially no current — it's a sensing input pulled up through a resistor, not
-a supply.
-
-The display's own VCC is **48 V**, far above the 6–24 V an UNO R4 accepts on
-VIN, so it can't be used directly either. A USB power bank is the simplest safe
-option.
-
----
-
-## Status
-
-Working: throttle, pedal assist levels 0–5, lights, walk assist, live speed
-readout.
-
-Not identified: speed limit and wheel size settings. Bytes 3 and 4 of the
-message are the likely candidates and are probably live — our sweeps of them
-were run without a throttle or pedalling, which is exactly the mistake described
-above, so those results should not be trusted.
-
-Front and rear lights share one output and cannot be controlled separately.
-
----
+Speed limit and wheel size. Bytes 3 and 4 are the likely candidates but were
+only tested without a throttle or pedalling, so those results prove nothing.
 
 ## Disclaimer
 
-This modifies the control system of an electric bicycle. A mistake can cause the
-motor to run when you don't expect it. Test with the wheel off the ground. You
-are responsible for your own bike and your own safety.
-
-MIT licensed — see `LICENSE`.
+This modifies the control system of an electric bicycle and can make the motor
+run unexpectedly. Test with the wheel off the ground. MIT licensed, no warranty
+— see `LICENSE`.
