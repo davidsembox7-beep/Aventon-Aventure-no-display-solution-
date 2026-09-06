@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Bike">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<title>Bike</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;
+padding:20px;padding-top:max(20px,env(safe-area-inset-top));
+padding-bottom:max(20px,env(safe-area-inset-bottom))}
+h2{margin:4px 0 10px;font-size:13px;color:#777;font-weight:700;
+text-transform:uppercase;letter-spacing:.1em}
+.row{display:flex;gap:8px}
+button{font-family:inherit;border:0;cursor:pointer}
+.lvl{flex:1;padding:24px 0;background:#2b2b2b;color:#eee;border-radius:14px;
+font-size:24px;font-weight:700}
+.lvl.on{background:#22aa77;color:#fff}
+.wide{display:block;width:100%;padding:20px;margin:10px 0;background:#2b2b2b;
+color:#eee;border-radius:14px;font-size:17px;font-weight:700}
+.wide.on{background:#22aa77;color:#fff}
+#connect{background:#2f6fd0;color:#fff}
+.status{margin-top:18px;padding:14px;background:#1b1b1b;border-radius:14px;
+font-size:14px;color:#999;line-height:1.7}
+.ok{color:#22aa77;font-weight:700}
+.bad{color:#e05555;font-weight:700}
+.dim{opacity:.4;pointer-events:none}
+#pass{width:100%;padding:18px;margin-bottom:10px;background:#1b1b1b;color:#eee;
+border:1px solid #333;border-radius:14px;font-size:17px;font-family:inherit}
+</style>
+</head>
+<body>
+
+<input id="pass" type="password" placeholder="Passcode" autocomplete="off">
+<button id="connect" class="wide">Connect to bike</button>
+
+<div id="panel" class="dim">
+  <h2>Assist level</h2>
+  <div class="row" id="levels"></div>
+
+  <h2>Controls</h2>
+  <button id="light" class="wide">Lights &nbsp;OFF</button>
+  <button id="walk" class="wide">Walk assist &nbsp;OFF</button>
+</div>
+
+<div class="status" id="status">Not connected</div>
+
+<script>
+const SERVICE = '19b10000-e8f2-537e-4f6c-d104768a1214';
+const CTRL    = '19b10001-e8f2-537e-4f6c-d104768a1214';
+const STAT    = '19b10002-e8f2-537e-4f6c-d104768a1214';
+const AUTH    = '19b10003-e8f2-537e-4f6c-d104768a1214';
+
+let ctrlChar = null;
+let level = 0, lightOn = false, walkOn = false;
+
+// The passcode is stored on this phone only. It is never part of the
+// published source, so the public page is useless to anyone else.
+const passEl = document.getElementById('pass');
+passEl.value = localStorage.getItem('bikePass') || '';
+passEl.addEventListener('change',
+  () => localStorage.setItem('bikePass', passEl.value));
+
+const panel   = document.getElementById('panel');
+const statusEl= document.getElementById('status');
+const lightBtn= document.getElementById('light');
+const walkBtn = document.getElementById('walk');
+const levelsEl= document.getElementById('levels');
+
+for (let i = 0; i <= 5; i++) {
+  const b = document.createElement('button');
+  b.className = 'lvl';
+  b.textContent = i;
+  b.onclick = () => { level = i; render(); push(); };
+  levelsEl.appendChild(b);
+}
+
+function render() {
+  [...levelsEl.children].forEach((b, i) =>
+    b.classList.toggle('on', i === level));
+  lightBtn.textContent = 'Lights  ' + (lightOn ? 'ON' : 'OFF');
+  lightBtn.classList.toggle('on', lightOn);
+  walkBtn.textContent = 'Walk assist  ' + (walkOn ? 'ON' : 'OFF');
+  walkBtn.classList.toggle('on', walkOn);
+}
+
+lightBtn.onclick = () => { lightOn = !lightOn; render(); push(); };
+walkBtn.onclick  = () => { walkOn  = !walkOn;  render(); push(); };
+
+async function push() {
+  if (!ctrlChar) return;
+  const flags = (level & 0x0F) | (walkOn ? 0x10 : 0) | (lightOn ? 0x80 : 0);
+  try {
+    await ctrlChar.writeValue(new Uint8Array([flags]));
+  } catch (e) {
+    statusEl.innerHTML = '<span class="bad">Write failed</span> — ' + e.message;
+  }
+}
+
+function onStatus(event) {
+  const v = event.target.value;
+  const bits  = v.getUint8(0);
+  const link  = bits & 1;
+  const unlocked = bits & 2;
+  const cur   = v.getUint8(1);
+  const speed = (v.getUint8(2) << 8) | v.getUint8(3);
+  statusEl.innerHTML =
+    'Controller: ' + (link
+      ? '<span class="ok">connected</span>'
+      : '<span class="bad">no reply</span>') +
+    '<br>Passcode: ' + (unlocked
+      ? '<span class="ok">accepted</span>'
+      : '<span class="bad">rejected</span>') +
+    '<br>Wheel: ' + (speed >= 3000 ? 'stopped' : speed) +
+    '<br>Current: ' + cur;
+}
+
+async function connectTo(device) {
+  statusEl.textContent = 'Connecting…';
+  const server  = await device.gatt.connect();
+  const service = await server.getPrimaryService(SERVICE);
+  ctrlChar = await service.getCharacteristic(CTRL);
+
+  // Unlock before anything else; the board ignores commands until this matches.
+  localStorage.setItem('bikePass', passEl.value);
+  const authCharacteristic = await service.getCharacteristic(AUTH);
+  await authCharacteristic.writeValue(new TextEncoder().encode(passEl.value));
+
+  const statChar = await service.getCharacteristic(STAT);
+  await statChar.startNotifications();
+  statChar.addEventListener('characteristicvaluechanged', onStatus);
+
+  device.addEventListener('gattserverdisconnected', () => {
+    ctrlChar = null;
+    panel.classList.add('dim');
+    statusEl.innerHTML = '<span class="bad">Disconnected</span>';
+  });
+
+  panel.classList.remove('dim');
+  statusEl.innerHTML = '<span class="ok">Connected</span>';
+  render();
+  push();
+}
+
+document.getElementById('connect').onclick = async () => {
+  if (!navigator.bluetooth) {
+    statusEl.innerHTML = '<span class="bad">This browser has no Bluetooth support.</span> Use Chrome on Android.';
+    return;
+  }
+  try {
+    // Reconnect silently if this device was already allowed once.
+    if (navigator.bluetooth.getDevices) {
+      const known = await navigator.bluetooth.getDevices();
+      const found = known.find(d => d.name === 'AventonBike');
+      if (found) { await connectTo(found); return; }
+    }
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'AventonBike' }],
+      optionalServices: [SERVICE]
+    });
+    await connectTo(device);
+  } catch (e) {
+    statusEl.innerHTML = '<span class="bad">' + e.message + '</span>';
+  }
+};
+
+render();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js');
+}
+</script>
+</body>
+</html>
